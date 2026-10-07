@@ -4,16 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>AI 재활 운동 앱 (UnTurtle)</title>
+    <!-- MediaPipe Pose 및 Camera Utils CDN -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     
+    <!-- Firebase SDK (v10 Modular) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, collection, addDoc, query, orderBy, limit, getDocs, updateDoc } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, addDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-firestore.js";
         import { getAnalytics, logEvent } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-analytics.js";
 
-        // 본인의 파이어베이스 설정값
+        // TODO: 본인의 파이어베이스 설정값으로 변경하세요
         const firebaseConfig = {
             apiKey: "AIzaSyAaWK4Rrrn-i2cKuFnNOQ_xpSljhB9eBJk",
             authDomain: "capstonesever-34cd2.firebaseapp.com",
@@ -32,16 +34,23 @@
         let currentUser = null;
         let camera = null;
         
+        // 유저 DB 연동 데이터
         let boneLevel = 0;
-        let gold = 10000;
+        let gold = 0;
         let shields = 0;
 
+        // ✅ 로그인(Auth) 가드가 포함된 화면 전환 함수
         window.navigate = function(viewId, navElement) {
-            // 모든 뷰 숨기고 선택한 뷰만 표시
+            // 로그인/회원가입 화면이 아닌데 유저 정보가 없으면 접근 차단
+            if (!currentUser && viewId !== 'view-login' && viewId !== 'view-signup') {
+                alert('로그인이 필요한 서비스입니다.');
+                viewId = 'view-login';
+            }
+
             document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
             document.getElementById(viewId).classList.add('active');
             
-            // ✅ 로그인/회원가입 화면에서는 하단 바 숨기기
+            // 하단 바 표시/숨김 제어
             const bottomNav = document.getElementById('main-bottom-nav');
             if(viewId === 'view-login' || viewId === 'view-signup') {
                 bottomNav.style.display = 'none';
@@ -49,7 +58,7 @@
                 bottomNav.style.display = 'flex';
             }
 
-            // 하단 네비게이션 활성화 표시
+            // 하단 네비게이션 탭 활성화 효과
             if(navElement) {
                 document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
                 navElement.classList.add('active');
@@ -57,8 +66,6 @@
 
             if(viewId === 'view-measure') startMediaPipeCamera();
             else stopMediaPipeCamera();
-
-            if(viewId === 'view-game' && currentUser) loadGameData();
         };
 
         // 회원가입
@@ -73,13 +80,16 @@
                 await setDoc(doc(db, "users", userCredential.user.uid), {
                     name: name,
                     email: email,
+                    routineDays: 0,
+                    consecutiveVisits: 1,
+                    lastVisitDate: new Date().toISOString().split('T')[0],
                     boneLevel: 0,
-                    gold: 10000,
+                    gold: 1000, // 초기 지원금
                     shields: 0,
                     createdAt: new Date().toISOString()
                 });
                 logEvent(analytics, 'sign_up', { method: 'Email' });
-                alert('회원가입 완료!');
+                alert('회원가입 완료! 로그인 해주세요.');
                 navigate('view-login');
             } catch (error) { alert('회원가입 실패: ' + error.message); }
         };
@@ -91,7 +101,58 @@
             try {
                 await signInWithEmailAndPassword(auth, email, pw);
                 logEvent(analytics, 'login', { method: 'Email' });
-            } catch (error) { alert('로그인 실패'); }
+                // 로그인이 성공하면 onAuthStateChanged가 감지하여 메인으로 넘김
+            } catch (error) { alert('로그인 실패: 아이디와 비밀번호를 확인하세요.'); }
+        };
+
+        // DB에서 유저 데이터(출석, 운동 기록, 게임 재화) 불러오기 및 출석 체크
+        async function loadUserDataAndCheckAttendance() {
+            const userRef = doc(db, "users", currentUser.uid);
+            const docSnap = await getDoc(userRef);
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                const today = new Date().toISOString().split('T')[0];
+                let visits = data.consecutiveVisits || 0;
+                let lastVisit = data.lastVisitDate || "";
+                
+                // 출석부 갱신 로직
+                if (lastVisit !== today) {
+                    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+                    if (lastVisit === yesterday) visits += 1;
+                    else visits = 1; // 하루 이상 빠지면 1일차로 초기화
+                    await updateDoc(userRef, { consecutiveVisits: visits, lastVisitDate: today });
+                }
+
+                // 메인 UI 및 캘린더 UI 갱신
+                document.getElementById('user-name-display').innerText = data.name || '익명';
+                document.getElementById('val-routine').innerText = `${data.routineDays || 0}일차`;
+                document.getElementById('calendar-streak').innerText = `${visits}일차`;
+                document.getElementById('visitCard').style.display = 'block';
+
+                // 게임 데이터 동기화
+                boneLevel = data.boneLevel || 0;
+                gold = data.gold || 0;
+                shields = data.shields || 0;
+                updateGameUI();
+            }
+        }
+
+        // 운동 완료 로직 (DB 연동 및 게임 보상)
+        window.completeExercise = async function() {
+            if(!currentUser) return;
+            const userRef = doc(db, "users", currentUser.uid);
+            const docSnap = await getDoc(userRef);
+            if(docSnap.exists()) {
+                const currentRoutine = docSnap.data().routineDays || 0;
+                const newGold = gold + 1000; // 운동 완료 시 1000골드 보상
+                
+                await updateDoc(userRef, { routineDays: currentRoutine + 1, gold: newGold });
+                logEvent(analytics, 'exercise_completed');
+                
+                alert(`오늘의 교정 운동 루틴을 완료했습니다!\n🎉 보상: 1000G 획득!`);
+                loadUserDataAndCheckAttendance(); // 데이터 갱신
+                navigate('view-main', document.getElementById('nav-home'));
+            }
         };
 
         // CVA 측정 (MediaPipe)
@@ -100,6 +161,7 @@
             const feedbackText = document.getElementById('measure-feedback');
             const pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
             pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+            
             pose.onResults((results) => {
                 if (!results.poseLandmarks) return;
                 const ear = results.poseLandmarks[7];
@@ -122,9 +184,12 @@
         async function saveMeasurementResult(angle) {
             if(!currentUser) return;
             try {
-                await addDoc(collection(db, "measurements"), { uid: currentUser.uid, date: new Date().toISOString(), angle: angle, status: angle > 50 ? "좋음" : "주의" });
+                await addDoc(collection(db, "measurements"), { uid: currentUser.uid, date: new Date().toISOString(), angle: angle });
+                document.getElementById('val-angle').innerText = `${angle}º 정도`;
+                document.getElementById('val-status').innerText = angle >= 50 ? "좋음" : "거북목 주의";
+                document.getElementById('val-status').style.color = angle >= 50 ? "#3182f6" : "#ff5252";
                 logEvent(analytics, 'measurement_completed', { angle: angle });
-                alert(`측정 완료! 각도: ${angle}°`);
+                alert(`측정 완료! 각도: ${angle}°\nDB에 안전하게 기록되었습니다.`);
                 navigate('view-main', document.getElementById('nav-home'));
             } catch(e) { console.error(e); }
         }
@@ -133,21 +198,8 @@
         // 🎮 미니게임 로직 (척추 강화)
         // =======================
         
-        async function loadGameData() {
-            const docSnap = await getDoc(doc(db, "users", currentUser.uid));
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                boneLevel = data.boneLevel || 0;
-                gold = data.gold || 0;
-                shields = data.shields || 0;
-                updateGameUI();
-            }
-        }
-
         async function saveGameData() {
-            if(currentUser) {
-                await updateDoc(doc(db, "users", currentUser.uid), { boneLevel, gold, shields });
-            }
+            if(currentUser) await updateDoc(doc(db, "users", currentUser.uid), { boneLevel, gold, shields });
         }
 
         function getUpgradeProb(lvl) {
@@ -167,7 +219,7 @@
 
         window.upgradeBone = function() {
             const cost = 500 + (boneLevel * 200);
-            if (gold < cost) return alert(`골드가 부족합니다! (필요: ${cost}G)`);
+            if (gold < cost) return alert(`골드가 부족합니다! 교정 운동을 하고 오세요.\n(필요: ${cost}G)`);
             
             gold -= cost;
             const prob = getUpgradeProb(boneLevel);
@@ -177,16 +229,14 @@
             if (roll <= prob) {
                 boneLevel++;
                 logBox.innerHTML = `<span style="color:#3182f6;">[성공] +${boneLevel}강 척추가 되었습니다! (성공률 ${prob}%)</span>`;
-                logEvent(analytics, 'game_upgrade_success', { level: boneLevel });
             } else {
                 if (shields > 0) {
                     shields--;
                     logBox.innerHTML = `<span style="color:#ff9800;">[실패] 강화보호권이 사용되어 척추가 파괴되지 않았습니다!</span>`;
                 } else {
                     boneLevel = 0;
-                    logBox.innerHTML = `<span style="color:#ff5252;">[파괴] 척추가 바스라졌습니다... 0강으로 초기화됩니다.</span>`;
+                    logBox.innerHTML = `<span style="color:#ff5252;">[파괴] 무리한 강화로 척추가 바스라졌습니다... 0강으로 초기화됩니다.</span>`;
                 }
-                logEvent(analytics, 'game_upgrade_fail', { level: boneLevel });
             }
             updateGameUI();
             saveGameData();
@@ -196,7 +246,7 @@
             if (gold < 5000) return alert("골드가 부족합니다! (필요: 5000G)");
             gold -= 5000;
             shields++;
-            document.getElementById('game-log').innerHTML = `<span style="color:#4CAF50;">강화보호권을 구매했습니다!</span>`;
+            document.getElementById('game-log').innerHTML = `<span style="color:#4CAF50;">강화보호권을 구매했습니다! 파괴를 1회 막아줍니다.</span>`;
             updateGameUI();
             saveGameData();
         };
@@ -216,15 +266,14 @@
             document.getElementById('bone-level-text').innerText = `+${boneLevel} 척추`;
             document.getElementById('user-gold').innerText = `${gold} G`;
             document.getElementById('user-shields').innerText = `${shields} 개`;
-            
-            const nextProb = getUpgradeProb(boneLevel);
-            const cost = 500 + (boneLevel * 200);
-            document.getElementById('upgrade-info').innerText = `성공 확률: ${nextProb}% | 비용: ${cost}G`;
+            document.getElementById('upgrade-info').innerText = `성공 확률: ${getUpgradeProb(boneLevel)}% | 비용: ${500 + (boneLevel * 200)}G`;
         }
 
+        // 로그인 상태 감지기 (최초 1회 및 로그인/로그아웃 시 실행)
         onAuthStateChanged(auth, (user) => {
             if (user) { 
-                currentUser = user; 
+                currentUser = user;
+                loadUserDataAndCheckAttendance(); // DB에서 모든 정보 가져오기
                 navigate('view-main', document.getElementById('nav-home')); 
             } else { 
                 currentUser = null; 
@@ -243,17 +292,18 @@
         input { width: 100%; background: var(--surface); border: none; padding: 18px; border-radius: 12px; color: var(--text); font-size: 16px; margin-bottom: 15px; box-sizing: border-box; }
         .btn { width: 100%; background: var(--primary); color: #fff; padding: 18px; border-radius: 12px; border: none; font-size: 16px; font-weight: 600; cursor: pointer; text-align: center; display: block; box-sizing: border-box; margin-bottom: 10px;}
         
-        /* ✅ 하단 네비게이션바 (초기 display: none 설정) */
-        .bottom-nav { display: none; position: absolute; bottom: 0; left: 0; width: 100%; background: var(--surface); padding: 15px 0; border-top: 1px solid #333; z-index: 10; }
-        .nav-item { flex: 1; text-align: center; color: var(--text-sub); font-size: 13px; font-weight: 600; cursor: pointer; }
+        /* ✅ 하단 네비게이션바 (5개 탭 분할) */
+        .bottom-nav { display: none; position: absolute; bottom: 0; left: 0; width: 100%; background: var(--surface); padding: 15px 0; border-top: 1px solid #333; z-index: 10; justify-content: space-between; }
+        .nav-item { flex: 1; text-align: center; color: var(--text-sub); font-size: 12px; font-weight: 600; cursor: pointer; }
         .nav-item.active { color: var(--primary); }
 
-        /* 게임 UI 스타일 */
-        .game-header { display: flex; justify-content: space-between; background: var(--surface); padding: 15px; border-radius: 12px; margin-bottom: 20px; font-weight: bold; }
+        /* 공통 카드 & 게임 UI 스타일 */
+        .card { background:var(--surface); border-radius:20px; padding:20px; border: 1px solid #333; margin-bottom:15px; }
+        .game-header { display: flex; justify-content: space-between; background: var(--surface); padding: 15px; border-radius: 12px; margin-bottom: 20px; font-weight: bold; border: 1px solid #333; }
         .bone-display { text-align: center; margin: 30px 0; }
         .bone-icon { font-size: 80px; display: inline-block; animation: float 3s ease-in-out infinite; }
         @keyframes float { 0% { transform: translateY(0px); } 50% { transform: translateY(-10px); } 100% { transform: translateY(0px); } }
-        .log-box { background: #111; border: 1px solid #333; padding: 15px; border-radius: 12px; font-size: 14px; min-height: 20px; text-align: center; margin-bottom: 20px; }
+        .log-box { background: #111; border: 1px solid #333; padding: 15px; border-radius: 12px; font-size: 14px; min-height: 20px; text-align: center; margin-bottom: 20px; font-weight: bold; }
         .game-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     </style>
 </head>
@@ -264,18 +314,18 @@
     <!-- 1. 로그인 화면 -->
     <div id="view-login" class="view active" style="justify-content: center;">
         <h1>UnTurtle 로그인</h1>
-        <input type="text" id="login-email" placeholder="이메일 입력">
+        <input type="text" id="login-email" placeholder="이메일 입력 (예: test@test.com)">
         <input type="password" id="login-pw" placeholder="비밀번호 입력">
         <button class="btn" onclick="handleLogin()">로그인</button>
-        <button class="btn" style="background:transparent; color:var(--text-sub);" onclick="navigate('view-signup')">회원가입하기</button>
+        <button class="btn" style="background:transparent; color:var(--text-sub);" onclick="navigate('view-signup')">처음이신가요? 회원가입하기</button>
     </div>
 
     <!-- 2. 회원가입 화면 -->
     <div id="view-signup" class="view" style="justify-content: center;">
         <h1>회원가입</h1>
-        <input type="text" id="signup-name" placeholder="이름">
-        <input type="email" id="signup-email" placeholder="이메일">
-        <input type="password" id="signup-pw" placeholder="비밀번호">
+        <input type="text" id="signup-name" placeholder="이름 (예: 홍길동)">
+        <input type="email" id="signup-email" placeholder="사용할 이메일">
+        <input type="password" id="signup-pw" placeholder="비밀번호 (6자리 이상)">
         <button class="btn" onclick="handleSignup()">가입 완료</button>
         <button class="btn" style="background:transparent; color:var(--text-sub);" onclick="navigate('view-login')">돌아가기</button>
     </div>
@@ -283,13 +333,18 @@
     <!-- 3. 메인 대시보드 -->
     <div id="view-main" class="view">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-            <div style="font-size: 20px; font-weight: 700;">내 데이터 요약</div>
+            <div style="font-size: 20px; font-weight: 700;"><span id="user-name-display">회원</span>님의 데이터 요약</div>
         </div>
-        <div style="background:var(--surface); border-radius:20px; padding:24px; display:grid; grid-template-columns:1fr 1fr; gap:24px;">
-            <div><p style="color:var(--text-sub); font-size:13px; margin:0 0 5px 0;">척추 각도</p><p style="font-size:22px; font-weight:bold; margin:0;">84º 정도</p></div>
-            <div><p style="color:var(--text-sub); font-size:13px; margin:0 0 5px 0;">현재 상태</p><p style="font-size:22px; font-weight:bold; color:var(--primary); margin:0;">좋음</p></div>
+        <div class="card" style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+            <div><p style="color:var(--text-sub); font-size:13px; margin:0 0 5px 0;">최근 척추 각도</p><p id="val-angle" style="font-size:22px; font-weight:bold; margin:0;">측정 필요</p></div>
+            <div><p style="color:var(--text-sub); font-size:13px; margin:0 0 5px 0;">현재 상태</p><p id="val-status" style="font-size:22px; font-weight:bold; margin:0;">-</p></div>
             <div><p style="color:var(--text-sub); font-size:13px; margin:0 0 5px 0;">휴대폰 사용</p><p style="font-size:22px; font-weight:bold; margin:0;">8시간</p></div>
-            <div><p style="color:var(--text-sub); font-size:13px; margin:0 0 5px 0;">루틴 횟수</p><p style="font-size:22px; font-weight:bold; margin:0;">5일차</p></div>
+            <div><p style="color:var(--text-sub); font-size:13px; margin:0 0 5px 0;">총 루틴 횟수</p><p id="val-routine" style="font-size:22px; font-weight:bold; margin:0;">0일차</p></div>
+        </div>
+        
+        <div class="card" style="text-align: center; margin-top: 10px;">
+            <p style="color:var(--text-sub); font-size:14px; margin-bottom: 10px;">꾸준한 관리가 필요합니다!</p>
+            <button class="btn" onclick="navigate('view-exercise', document.getElementById('nav-exercise'))">오늘의 교정 운동 하러가기</button>
         </div>
     </div>
 
@@ -298,24 +353,68 @@
         <div style="position:relative; width:100%; height:100%; display:flex; justify-content:center; align-items:center;">
             <video id="webcam" autoplay playsinline style="width:100%; height:100%; object-fit:cover; position:absolute;"></video>
             <div id="measure-feedback" style="position:absolute; top:30px; background:rgba(0,0,0,0.8); color:#fff; padding:12px 24px; border-radius:20px; font-weight:bold; border: 2px solid var(--primary);">
-                측면 카메라를 맞춰주세요...
+                카메라에 측면 상체를 맞춰주세요...
             </div>
             <button class="btn" style="position:absolute; bottom:30px; width:80%;" onclick="navigate('view-main', document.getElementById('nav-home'))">측정 취소</button>
         </div>
     </div>
+
+    <!-- ✅ 5. 잃어버렸던 교정 운동 화면 부활 -->
+    <div id="view-exercise" class="view">
+        <h1>오늘의 교정 루틴</h1>
+        <div class="card" style="text-align: center; border-color: var(--primary);">
+            <h2 style="margin: 0 0 5px 0; color: var(--primary);">1일차 코스</h2>
+            <p style="margin: 0; color: var(--text-sub); font-size: 14px;">선행연구 기반 맞춤 거북목 완화 루틴</p>
+        </div>
+
+        <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <strong style="display: block; margin-bottom: 5px; font-size: 16px;">1. 턱 당기기 (Chin Tuck)</strong>
+                <span style="font-size: 13px; color: var(--text-sub);">10회 반복 x 3세트 (거북목 핵심)</span>
+            </div>
+            <div style="width: 40px; height: 40px; background: #333; border-radius: 50%; display: flex; justify-content: center; align-items: center;">▶</div>
+        </div>
+
+        <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <strong style="display: block; margin-bottom: 5px; font-size: 16px;">2. 폼롤러 흉추 펴기</strong>
+                <span style="font-size: 13px; color: var(--text-sub);">1분 유지 x 3세트</span>
+            </div>
+            <div style="width: 40px; height: 40px; background: #333; border-radius: 50%; display: flex; justify-content: center; align-items: center;">▶</div>
+        </div>
+
+        <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <strong style="display: block; margin-bottom: 5px; font-size: 16px;">3. 팔꿈치 벽에 대고 밀어올리기</strong>
+                <span style="font-size: 13px; color: var(--text-sub);">10회 반복 x 3세트</span>
+            </div>
+            <div style="width: 40px; height: 40px; background: #333; border-radius: 50%; display: flex; justify-content: center; align-items: center;">▶</div>
+        </div>
+
+        <button class="btn" style="margin-top: 20px;" onclick="completeExercise()">✅ 모든 운동 완료하기</button>
+    </div>
     
-    <!-- 5. 캘린더 화면 -->
+    <!-- 6. 캘린더 화면 -->
     <div id="view-calendar" class="view">
         <h1>운동 캘린더</h1>
-        <div style="background:var(--surface); border-radius:20px; padding:20px;">
-            <p style="text-align:center; color:var(--text-sub);">이번 달 기록 내역</p>
-            <p style="text-align:center; font-size:20px; font-weight:bold;">🔥 5일 연속 출석!</p>
+        
+        <div class="card" id="visitCard" style="text-align: center; border-color: #ff9800;">
+            <p style="margin:0 0 10px 0; color:var(--text-sub); font-size: 14px;">🔥 현재 연속 달성 기록</p>
+            <h2 id="calendar-streak" style="margin:0; font-size:32px; color: #ff9800;">1일차</h2>
+        </div>
+
+        <div class="card">
+            <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; text-align: center; font-weight: bold; margin-bottom: 15px;">
+                <div style="color: #ff5252;">일</div><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div style="color: var(--primary);">토</div>
+                <div></div><div>1</div><div>2</div><div>3</div><div>4</div><div style="color: var(--primary);">5</div><div style="color: #ff5252;">6</div>
+                <div>7</div><div>8</div><div>9</div><div>10</div>
+            </div>
         </div>
     </div>
 
-    <!-- 6. 🎮 미니게임 탭 -->
+    <!-- 7. 🎮 완전히 분리된 5번째 탭: 척추 강화 미니게임 -->
     <div id="view-game" class="view">
-        <h1>척추 공방</h1>
+        <h1>척추 공방 (Game)</h1>
         
         <div class="game-header">
             <div>💰 <span id="user-gold">0 G</span></div>
@@ -329,23 +428,24 @@
         </div>
 
         <div class="log-box" id="game-log">
-            강화 버튼을 눌러 척추를 단련하세요!
+            실제 교정 운동을 완료하여 골드를 얻고 강화하세요!
         </div>
 
-        <button class="btn" style="background:#e91e63; padding:20px; font-size:20px;" onclick="upgradeBone()">🔨 강화하기</button>
+        <button class="btn" style="background:#e91e63; padding:20px; font-size:20px;" onclick="upgradeBone()">🔨 척추 강화하기</button>
         
         <div class="game-grid">
-            <button class="btn" style="background:#ff9800; font-size:14px;" onclick="buyShield()">🛡️ 보호권 구매 (5000G)</button>
-            <button class="btn" style="background:#9c27b0; font-size:14px;" onclick="sellBone()">💸 현재 뼈 팔기</button>
+            <button class="btn" style="background:#ff9800; font-size:14px;" onclick="buyShield()">🛡️ 파괴 방지권 (5000G)</button>
+            <button class="btn" style="background:#9c27b0; font-size:14px;" onclick="sellBone()">💸 현재 척추 팔기</button>
         </div>
     </div>
 
-    <!-- ✅ 하단 고정 네비게이션바 -->
+    <!-- ✅ 하단 고정 네비게이션바 (5개 탭 분할 완비) -->
     <div class="bottom-nav" id="main-bottom-nav">
         <div class="nav-item active" id="nav-home" onclick="navigate('view-main', this)">홈</div>
-        <div class="nav-item" onclick="navigate('view-measure', this)">자세측정</div>
-        <div class="nav-item" onclick="navigate('view-calendar', this)">캘린더</div>
-        <div class="nav-item" onclick="navigate('view-game', this)">뼈강화🎮</div>
+        <div class="nav-item" id="nav-measure" onclick="navigate('view-measure', this)">측정</div>
+        <div class="nav-item" id="nav-exercise" onclick="navigate('view-exercise', this)">운동</div>
+        <div class="nav-item" id="nav-calendar" onclick="navigate('view-calendar', this)">캘린더</div>
+        <div class="nav-item" id="nav-game" onclick="navigate('view-game', this)">뼈강화🎮</div>
     </div>
 
 </div>
