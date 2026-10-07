@@ -11,7 +11,8 @@
     <!-- Firebase SDK (v10 Modular) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
-        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-auth.js";
+        // ✅ signOut 모듈 추가
+        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, collection, addDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-firestore.js";
         import { getAnalytics, logEvent } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-analytics.js";
 
@@ -34,14 +35,11 @@
         let currentUser = null;
         let camera = null;
         
-        // 유저 DB 연동 데이터
         let boneLevel = 0;
         let gold = 0;
         let shields = 0;
 
-        // ✅ 로그인(Auth) 가드가 포함된 화면 전환 함수
         window.navigate = function(viewId, navElement) {
-            // 로그인/회원가입 화면이 아닌데 유저 정보가 없으면 접근 차단
             if (!currentUser && viewId !== 'view-login' && viewId !== 'view-signup') {
                 alert('로그인이 필요한 서비스입니다.');
                 viewId = 'view-login';
@@ -50,7 +48,6 @@
             document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
             document.getElementById(viewId).classList.add('active');
             
-            // 하단 바 표시/숨김 제어
             const bottomNav = document.getElementById('main-bottom-nav');
             if(viewId === 'view-login' || viewId === 'view-signup') {
                 bottomNav.style.display = 'none';
@@ -58,7 +55,6 @@
                 bottomNav.style.display = 'flex';
             }
 
-            // 하단 네비게이션 탭 활성화 효과
             if(navElement) {
                 document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
                 navElement.classList.add('active');
@@ -84,7 +80,7 @@
                     consecutiveVisits: 1,
                     lastVisitDate: new Date().toISOString().split('T')[0],
                     boneLevel: 0,
-                    gold: 1000, // 초기 지원금
+                    gold: 1000, 
                     shields: 0,
                     createdAt: new Date().toISOString()
                 });
@@ -101,11 +97,21 @@
             try {
                 await signInWithEmailAndPassword(auth, email, pw);
                 logEvent(analytics, 'login', { method: 'Email' });
-                // 로그인이 성공하면 onAuthStateChanged가 감지하여 메인으로 넘김
             } catch (error) { alert('로그인 실패: 아이디와 비밀번호를 확인하세요.'); }
         };
 
-        // DB에서 유저 데이터(출석, 운동 기록, 게임 재화) 불러오기 및 출석 체크
+        // ✅ 로그아웃 함수 추가
+        window.handleLogout = async function() {
+            try {
+                await signOut(auth);
+                alert('로그아웃 되었습니다.');
+                // onAuthStateChanged가 즉시 감지하여 로그인 화면으로 쫓아냅니다.
+            } catch (error) {
+                console.error(error);
+            }
+        };
+
+        // DB에서 유저 데이터 가져오기 및 출석 체크
         async function loadUserDataAndCheckAttendance() {
             const userRef = doc(db, "users", currentUser.uid);
             const docSnap = await getDoc(userRef);
@@ -115,21 +121,18 @@
                 let visits = data.consecutiveVisits || 0;
                 let lastVisit = data.lastVisitDate || "";
                 
-                // 출석부 갱신 로직
                 if (lastVisit !== today) {
                     const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
                     if (lastVisit === yesterday) visits += 1;
-                    else visits = 1; // 하루 이상 빠지면 1일차로 초기화
+                    else visits = 1; 
                     await updateDoc(userRef, { consecutiveVisits: visits, lastVisitDate: today });
                 }
 
-                // 메인 UI 및 캘린더 UI 갱신
                 document.getElementById('user-name-display').innerText = data.name || '익명';
                 document.getElementById('val-routine').innerText = `${data.routineDays || 0}일차`;
                 document.getElementById('calendar-streak').innerText = `${visits}일차`;
                 document.getElementById('visitCard').style.display = 'block';
 
-                // 게임 데이터 동기화
                 boneLevel = data.boneLevel || 0;
                 gold = data.gold || 0;
                 shields = data.shields || 0;
@@ -137,20 +140,20 @@
             }
         }
 
-        // 운동 완료 로직 (DB 연동 및 게임 보상)
+        // 운동 완료 로직
         window.completeExercise = async function() {
             if(!currentUser) return;
             const userRef = doc(db, "users", currentUser.uid);
             const docSnap = await getDoc(userRef);
             if(docSnap.exists()) {
                 const currentRoutine = docSnap.data().routineDays || 0;
-                const newGold = gold + 1000; // 운동 완료 시 1000골드 보상
+                const newGold = gold + 1000; 
                 
                 await updateDoc(userRef, { routineDays: currentRoutine + 1, gold: newGold });
                 logEvent(analytics, 'exercise_completed');
                 
                 alert(`오늘의 교정 운동 루틴을 완료했습니다!\n🎉 보상: 1000G 획득!`);
-                loadUserDataAndCheckAttendance(); // 데이터 갱신
+                loadUserDataAndCheckAttendance(); 
                 navigate('view-main', document.getElementById('nav-home'));
             }
         };
@@ -269,11 +272,10 @@
             document.getElementById('upgrade-info').innerText = `성공 확률: ${getUpgradeProb(boneLevel)}% | 비용: ${500 + (boneLevel * 200)}G`;
         }
 
-        // 로그인 상태 감지기 (최초 1회 및 로그인/로그아웃 시 실행)
         onAuthStateChanged(auth, (user) => {
             if (user) { 
                 currentUser = user;
-                loadUserDataAndCheckAttendance(); // DB에서 모든 정보 가져오기
+                loadUserDataAndCheckAttendance(); 
                 navigate('view-main', document.getElementById('nav-home')); 
             } else { 
                 currentUser = null; 
@@ -292,12 +294,10 @@
         input { width: 100%; background: var(--surface); border: none; padding: 18px; border-radius: 12px; color: var(--text); font-size: 16px; margin-bottom: 15px; box-sizing: border-box; }
         .btn { width: 100%; background: var(--primary); color: #fff; padding: 18px; border-radius: 12px; border: none; font-size: 16px; font-weight: 600; cursor: pointer; text-align: center; display: block; box-sizing: border-box; margin-bottom: 10px;}
         
-        /* ✅ 하단 네비게이션바 (5개 탭 분할) */
         .bottom-nav { display: none; position: absolute; bottom: 0; left: 0; width: 100%; background: var(--surface); padding: 15px 0; border-top: 1px solid #333; z-index: 10; justify-content: space-between; }
         .nav-item { flex: 1; text-align: center; color: var(--text-sub); font-size: 12px; font-weight: 600; cursor: pointer; }
         .nav-item.active { color: var(--primary); }
 
-        /* 공통 카드 & 게임 UI 스타일 */
         .card { background:var(--surface); border-radius:20px; padding:20px; border: 1px solid #333; margin-bottom:15px; }
         .game-header { display: flex; justify-content: space-between; background: var(--surface); padding: 15px; border-radius: 12px; margin-bottom: 20px; font-weight: bold; border: 1px solid #333; }
         .bone-display { text-align: center; margin: 30px 0; }
@@ -334,6 +334,8 @@
     <div id="view-main" class="view">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
             <div style="font-size: 20px; font-weight: 700;"><span id="user-name-display">회원</span>님의 데이터 요약</div>
+            <!-- ✅ 로그아웃 버튼 추가 -->
+            <button onclick="handleLogout()" style="background:transparent; border:1px solid #ff5252; color:#ff5252; padding:5px 10px; border-radius:8px; cursor:pointer;">로그아웃</button>
         </div>
         <div class="card" style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
             <div><p style="color:var(--text-sub); font-size:13px; margin:0 0 5px 0;">최근 척추 각도</p><p id="val-angle" style="font-size:22px; font-weight:bold; margin:0;">측정 필요</p></div>
@@ -359,7 +361,7 @@
         </div>
     </div>
 
-    <!-- ✅ 5. 잃어버렸던 교정 운동 화면 부활 -->
+    <!-- 5. 교정 운동 화면 -->
     <div id="view-exercise" class="view">
         <h1>오늘의 교정 루틴</h1>
         <div class="card" style="text-align: center; border-color: var(--primary);">
@@ -412,7 +414,7 @@
         </div>
     </div>
 
-    <!-- 7. 🎮 완전히 분리된 5번째 탭: 척추 강화 미니게임 -->
+    <!-- 7. 🎮 미니게임 탭 -->
     <div id="view-game" class="view">
         <h1>척추 공방 (Game)</h1>
         
@@ -439,7 +441,7 @@
         </div>
     </div>
 
-    <!-- ✅ 하단 고정 네비게이션바 (5개 탭 분할 완비) -->
+    <!-- 하단 고정 네비게이션바 -->
     <div class="bottom-nav" id="main-bottom-nav">
         <div class="nav-item active" id="nav-home" onclick="navigate('view-main', this)">홈</div>
         <div class="nav-item" id="nav-measure" onclick="navigate('view-measure', this)">측정</div>
